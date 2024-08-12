@@ -22,7 +22,7 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	// 	backlog is the number of connec-tions allowed on the incoming queue.
+	// backlog is the number of connections allowed on the incoming queue.
 	// Incoming connections are going to wait in this queue until you accept()
 	// this is the limit on how many can queue up
 	MAX_TCP_QUEUE_BACKLOG :: 1280
@@ -46,8 +46,8 @@ main :: proc() {
 		}
 
 
-		// We might not receive the entire payload in a single recv call
-		// HTTP standard dictates that two CRLF end the request
+		// We might not receive the entire payload in a single recv call so we keep
+		// calling recv_tcp until we have an exit condition.
 		total_bytes_recv := 0
 		for {
 			bytes_recv, recv_err := net.recv_tcp(client_socket, recv_buffer[:])
@@ -66,17 +66,27 @@ main :: proc() {
 				break
 			}
 
-			// This is only true for a GET request
 			last_four_bytes := recv_buffer[total_bytes_recv - 4:total_bytes_recv]
 			if (bytes.compare(last_four_bytes, []byte{'\r', '\n', '\r', '\n'}) == 0) {
-				break
+				// TODO: Probably parse headers here and then check:
+				//           - request type
+				//           - presence of Content-Length Header
+				//       If so then we want to figure out how many more bytes to process
+				//       (will be Content-Length) before breaking from the loop
+				req := parse_request(recv_buffer[:total_bytes_recv])
+				fmt.printfln("Got request: \n %v", req)
+
+				body_length := req.Headers["Content-Length"]
+				fmt.printfln("Length of body: '%s'", body_length)
+				if (body_length == "") {
+					break
+				} else {
+					// TODO: Parse body
+					break
+				}
 			}
-
-
 		}
 
-
-		fmt.printfln("received: %s", recv_buffer[:total_bytes_recv])
 
 		response := "HTTP/1.1 200 OK\r\n\r\nHello, World\r\n"
 		// Send data via TCP to client_socket
@@ -91,7 +101,6 @@ main :: proc() {
 			}
 			bytes_sent += n
 		}
-		fmt.println("Sent response", response)
 	}
 
 }
