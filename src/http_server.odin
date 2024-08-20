@@ -7,6 +7,15 @@ import "core:os"
 
 // Maximum request size
 MAX_RECV_BYTES :: 4096
+MIN_HTTP_1_BYTES :: 16
+
+Request :: struct {
+	Method:   string, // https://www.rfc-editor.org/rfc/rfc2616#section-5.1.1
+	URI:      string, // https://www.rfc-editor.org/rfc/rfc2616#section-5.1.2
+	Protocol: string, // For rfc2616 this would be HTTP/1.1
+	Headers:  map[string]string,
+	Body:     []u8,
+}
 
 main :: proc() {
 	arguments := os.args
@@ -40,15 +49,16 @@ main :: proc() {
 		defer net.shutdown(client_socket, .Both)
 		// Close frees the file descripter (socket)
 		defer net.close(client_socket)
+
 		if accept_error != nil {
 			fmt.eprintln("Failed to accept connection", accept_error)
 			continue
 		}
 
-
 		// We might not receive the entire payload in a single recv call so we keep
 		// calling recv_tcp until we have an exit condition.
-		total_bytes_recv := 0
+		request: Request
+		progress: ParseRequestProgress
 		for {
 			bytes_recv, recv_err := net.recv_tcp(client_socket, recv_buffer[:])
 			if recv_err != nil {
@@ -61,32 +71,35 @@ main :: proc() {
 				break
 			}
 
-			total_bytes_recv += bytes_recv
-			if (total_bytes_recv > MAX_RECV_BYTES) {
-				break
+
+			if (bytes_recv < MIN_HTTP_1_BYTES) {
+				continue
 			}
 
-			last_four_bytes := recv_buffer[total_bytes_recv - 4:total_bytes_recv]
-			if (bytes.compare(last_four_bytes, []byte{'\r', '\n', '\r', '\n'}) == 0) {
-				// TODO: Probably parse headers here and then check:
-				//           - request type
-				//           - presence of Content-Length Header
-				//       If so then we want to figure out how many more bytes to process
-				//       (will be Content-Length) before breaking from the loop
-				req := parse_request(recv_buffer[:total_bytes_recv])
-				fmt.printfln("Got request: \n %v", req)
+			parse_ok := parse_request(
+				recv_buffer[progress.parsed_bytes:bytes_recv],
+				&progress,
+				&request,
+			)
 
-				body_length := req.Headers["Content-Length"]
-				fmt.printfln("Length of body: '%s'", body_length)
-				if (body_length == "") {
-					break
-				} else {
-					// TODO: Parse body
-					break
-				}
+			if (!parse_ok) {
+				// TODO: Send 4xx response
+				fmt.eprintln("Error parsing request", request, parse_ok)
+				os.exit(1)
+			}
+
+			if (progress.parsed_bytes >= MAX_RECV_BYTES) {
+				// TODO: Send 4xx response
+				fmt.eprintln("Request exceeds maximum payload size")
+				os.exit(1)
+			}
+
+			if (progress.parsed_bytes > 0 && progress.parsed_bytes == progress.expected_bytes) {
+				break
 			}
 		}
 
+		fmt.printfln("Got request: \n %v", request)
 
 		response := "HTTP/1.1 200 OK\r\n\r\nHello, World\r\n"
 		// Send data via TCP to client_socket
